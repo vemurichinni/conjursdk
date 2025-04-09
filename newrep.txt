@@ -1,0 +1,385 @@
+// fuo_get_client_list
+// 1. Performs architecture sp setup
+// 2. Retrieves the client list
+// 3. Check the results
+// 4. Performs architecture sp cleanup
+// 5. Returns list
+// Author: BJM 3/2001
+// Revisions:
+// 1/10/02 kw31 - added code that expects first call to this method to pass BPPSECURE
+//                then a recursive call to this function is made using BPP
+// 12/3/02 bks2 - added code for transmission-only IDs.
+
+
+integer li_error_code, li_session_token, li_button, li_svc_ver_num, li_index, li_dummy_rpc_code
+string ls_appname, ls_displayedappname, ls_username, ls_namefirst, ls_namelast, ls_error_code
+string ls_orgname, ls_usergroup, ls_i_sys_user, ls_bpp_user, ls_user_type, ls_user_type1, ls_user_access
+long ll_insert_row, ll_code, ll_stat, ll_sqldbcode, ll_insert_row_trans, ll_find, ll_end, ll_dummy_rpc_code
+String ls_db_bpp_user, ls_db_ext_usr_grp, ls_db_ext_src_sys , ls_db_user_lst_nm , ls_db_user_frst_nm  //rb648 added
+String ls_db_app_name , ls_prv_bpp_user , ls_curr_bpp_user //rb648 added
+
+//ls_bpp_user = auo_container.is_username
+
+
+////ADO 2283439  remove sybase connectivity  - rb648
+//DECLARE sp_search PROCEDURE FOR dbo.wadm_selectappaccess
+//		@errorcode     = :li_error_code,
+//		@sessiontoken  = :li_session_token,
+//		@orgname       = :ls_orgname,
+//		@username      = :ls_username,
+//		@appname       = :ls_appname
+//USING SQLCA;
+////rb648
+
+/***** Changed - Cognizant - 04/06/2005 - 9V2 Upgradation *****/
+/***** Start Of Comment - Cognizant - 04/06/2005 - 9V2 Upgradation *****/
+//DECLARE sp_get_tran_ids PROCEDURE FOR dbo.sp_nas_bps001_get_tran_ids
+//		@rpc_return_code  = '',
+//		@i_svc_ver_num    = :li_svc_ver_num,
+//		@i_bpp_user			= :ls_bpp_user
+//USING NASARCH.ArchConnect[li_index].trans_obj;
+/***** End Of Comment - Cognizant - 04/06/2005 - 9V2 Upgradation *****/
+
+Long ll_error_code
+/***** Start Of New Code - Cognizant - 04/06/2005 - 9V2 Upgradation *****/
+DECLARE sp_get_tran_ids PROCEDURE FOR BPSP350I
+		@i_svc_ver_num    = :li_svc_ver_num,
+		@i_bpp_user			= :ls_bpp_user
+USING NASARCH.ArchConnect[li_index].trans_obj;
+/***** End Of New Code - Cognizant - 04/06/2005 - 9V2 Upgradation *****/
+/***** End Of Change - Cognizant - 04/06/2005 - 9V2 Upgradation *****/
+
+//rb648
+DECLARE sp_search PROCEDURE FOR BPSP360I
+		@i_svc_ver_num    = :li_svc_ver_num,
+		@i_bpp_user			= :ls_username
+USING SQLCA;
+//rb648
+
+	
+
+//Set Input Values
+
+li_error_code    = 0
+li_session_token = 0
+ls_orgname       = "TNT"
+ls_username      = auo_container.is_username + "%"
+ls_appname       = as_appname
+				
+ls_i_sys_user = guo_env.fuo_get_parm("NAS ID")
+
+// Prepare output datawindow
+// kw31 changes start here
+IF (as_appname <> 'BPP') THEN
+	ids_search_results.Reset()
+	ids_search_results.dataobject = 'd_search_list'
+END IF
+// kw31 end change
+
+
+/// rb648    comment below code
+// Check and see if connection is open.  If not, connect to it.
+
+If sqlca.DBHandle() = 0 THEN 
+  IF fuo_check_connect("sp_search") <> SUCCESSFUL THEN
+		RETURN UNSUCCESSFUL
+	END IF
+END IF
+
+
+IF (as_appname <> 'BPP') THEN
+	return this.fuo_get_client_list(auo_container,'BPP')
+ELSE
+
+		EXECUTE sp_search; 
+		
+		ll_code = SQLCA.sqldbcode
+		
+		// PB/Open Server workaround.  SQLDBCode = 1 for certain RPCs that executed OK.
+		// Change it to 0 to prevent false alarm.
+		
+		if ll_code = 1 then 
+			SQLCA.sqldbcode = 0
+			ll_code = 0
+		end if
+		
+		ls_prv_bpp_user  = ""
+		ls_curr_bpp_user = ""
+		
+		FETCH sp_search 
+		INTO		:ls_db_bpp_user ,  //ls_username 
+					:ls_db_ext_usr_grp,
+					:ls_db_ext_src_sys , // ls_orgname   --- TNT
+					:ls_db_user_lst_nm,  //ls_namelast
+					:ls_db_user_frst_nm, //ls_namefirst
+					:ls_db_app_name, //ls_displayedappname  --benifit payment system
+					:ls_error_code ;
+		IF SQLCA.SQLCode < 0 THEN
+			MessageBox("Fetch Error"," SQL Error: " + String (SQLCA.SQLCode))
+			if SQLCA.SQLCode = -1 THEN
+				MessageBox("SQL Error","SQL Code -1~r~n" + String(SQLCA.SQLDBCode) + " - " + SQLCA.SQLErrText)
+			end if
+			EXIT
+		End IF
+			ll_error_code = Long (ls_error_code)	
+			ls_curr_bpp_user = ls_db_bpp_user
+			ls_orgname = ls_db_ext_src_sys
+			ls_username = ls_db_bpp_user
+			ls_namelast = ls_db_user_lst_nm
+			ls_namefirst = ls_db_user_frst_nm
+			ls_usergroup = ls_db_ext_usr_grp
+			ls_displayedappname = ls_db_app_name
+			
+					
+		DO WHILE (SQLCA.SQLCode = 0) 
+			//Added additional function to check for any blank username
+			//MessageBox("Debug"," Find the length of username: " + String (Len(ls_username)))
+			// to remove duplicate entry	
+			if ls_prv_bpp_user  <> ls_curr_bpp_user  and &		
+			fuo_is_valid_string(ls_username)  then		 			
+				ll_insert_row = ids_search_results.InsertRow(0)
+				
+				ids_search_results.SetItem(ll_insert_row,"username",ls_username) 
+				ids_search_results.SetItem(ll_insert_row,"namefirst",ls_namefirst)
+				ids_search_results.SetItem(ll_insert_row,"namelast",ls_namelast)
+				ids_search_results.SetItem(ll_insert_row,"usergroup",ls_usergroup)
+				
+				ls_prv_bpp_user = ls_curr_bpp_user
+				
+			end if 
+					
+			FETCH sp_search  
+			INTO		:ls_db_bpp_user ,  //ls_username 
+						:ls_db_ext_usr_grp,
+						:ls_db_ext_src_sys , // ls_orgname   --- TNT
+						:ls_db_user_lst_nm,  //ls_namelast
+						:ls_db_user_frst_nm, //ls_namefirst
+						:ls_db_app_name, //ls_displayedappname  --benifit payment system
+						:ls_error_code ;
+		
+			ll_error_code = Long (ls_error_code)	
+			
+			ls_curr_bpp_user = ls_db_bpp_user
+			ls_orgname = ls_db_ext_src_sys
+			ls_username = ls_db_bpp_user
+			ls_namelast = ls_db_user_lst_nm
+			ls_namefirst = ls_db_user_frst_nm
+			ls_usergroup = ls_db_ext_usr_grp
+			ls_displayedappname = ls_db_app_name
+			
+			LOOP
+		
+		CLOSE sp_search;
+
+end if 
+/// rb648    comment above code
+
+
+// kw31 changes start here
+IF (as_appname <> 'BPP') THEN
+	return this.fuo_get_client_list(auo_container,'BPP')
+ELSE
+// bks2 changes start here
+	ls_bpp_user = auo_container.is_username + "%"
+
+
+/***** Changed - Cognizant - 04/28/2005 - 9V2 Upgradation *****/ 
+/***** Start Of Comment - Cognizant - 04/28/2005 - 9V2 Upgradation *****/  
+//ll_stat = fg_db_call_open("uo_database, fuo_get_client_list", "Main", li_index)
+/***** End Of Comment - Cognizant - 04/28/2005 - 9V2 Upgradation *****/ 
+
+/***** Start Of New Code - Cognizant - 04/28/2005 - 9V2 Upgradation *****/ 
+	ll_stat = fg_db_call_open("uo_database, fuo_get_client_list", "MAIN-DB2", li_index)
+/***** End Of New Code - Cognizant - 04/28/2005 - 9V2 Upgradation *****/ 
+/***** End Of Change - Cognizant - 04/28/2005 - 9V2 Upgradation *****/
+	
+	IF ll_stat <> SUCCESSFUL Then 
+		fg_nea_process_error(ERRORS, "56534", "Transmission-only IDs for uo_database", DISPLAY, OK!, 1, li_button)
+		RETURN UNSUCCESSFUL
+	End If
+
+// Added as a fix to ct_send error.  DJ  10/30/97
+	NASARCH.ArchConnect[li_index].trans_obj.Autocommit = FALSE
+	
+	EXECUTE sp_get_tran_ids;
+	
+/***** Changed - Cognizant - 05/01/2005 - 9V2 Upgradation *****/
+/***** Start Of New Code - Cognizant - 05/01/2005 - 9V2 Upgradation *****/
+//when execute is succesful do the following
+// Fetch transaction IDs
+IF NASARCH.ArchConnect[li_index].trans_obj.SQLCODE = SUCCESSFUL THEN
+	FETCH sp_get_tran_ids
+	   	INTO	:ls_bpp_user,
+					:ls_user_type,
+					:ls_user_access,
+					:ls_error_code;
+	ll_error_code = Long (ls_error_code)
+	
+	 // Debug fetched values
+  /* MessageBox("DEBUG: Fetched Values", &
+       "ls_bpp_user: " + ls_bpp_user + "~r~n" + &
+       "ls_user_type: " + ls_user_type + "~r~n" + &
+       "ls_user_access: " + ls_user_access + "~r~n" + &
+       "ls_error_code: " + String(ll_error_code))*/
+		 
+	   // Handle fetch result
+	IF NASARCH.ArchConnect[li_index].trans_obj.SQLCODE <> SQL_NOT_FOUND THEN					
+		IF ll_error_code = SUCCESSFUL THEN
+			ll_stat = ll_error_code
+		ELSE
+			gl_out_error = ll_error_code				
+			ll_stat = fg_db_call_post_exec(li_index)
+		END IF	
+	
+		ll_sqldbcode = NASARCH.ArchConnect[li_index].trans_obj.sqldbcode
+
+		CHOOSE CASE ll_stat
+		CASE 99100
+			ids_search_results = fuo_get_search_results()
+			//Debug: number of existing rows
+			//MessageBox("Debug", " Search Results Row Count: "+ String(ids_search_results.RowCount()))
+			IF ids_search_results.RowCount() = 0 THEN
+				// Debug: No rows found
+                // MessageBox("DEBUG", "No records found in search results.")
+				fg_nea_process_error(INFORMATION,                    &
+		   		"ID not found on database.",                      &
+					"User info, fuo_get_client_list for uo_database", &
+					DISPLAY,                                          &
+					OK!,                                              &
+					1,                                                & 
+					li_button)
+					
+				fg_nea_rpc_close(li_index)
+				CLOSE sp_get_tran_ids;
+				RETURN SUCCESSFUL
+			END IF
+		
+		CASE 0
+			/*Fetch is already done
+			FETCH sp_get_tran_ids
+	   		INTO	:ls_bpp_user,
+						:ls_user_type,
+						:ls_user_access;*/
+			NASARCH.ArchConnect[li_index].trans_obj.sqlcode = 0		   					
+			//DO WHILE NASARCH.ArchConnect[li_index].trans_obj.sqldbcode = 0
+			DO WHILE NASARCH.ArchConnect[li_index].trans_obj.sqlcode = 0
+				ll_end = ids_search_results.RowCount()
+				
+				ll_find = ids_search_results.Find("username = '" + ls_bpp_user + "'", 1, ll_end)
+				
+				 // Insert new row if not found
+				IF ll_find < 1 THEN
+					IF NOT IsNull(ls_bpp_user) AND Trim(ls_bpp_user) <> "" THEN
+					
+					ll_insert_row_trans = ids_search_results.InsertRow(ll_insert_row)
+					ids_search_results.SetItem(ll_insert_row_trans,"username",ls_bpp_user)
+					 // Uppercase user access
+					ls_user_access = Upper(Mid(ls_user_access,1,1))
+
+					/***** Changed - Cognizant - 05/31/2005 - 9V2 Upgradation *****/ 
+					/***** Start Of Comment - Cognizant - 05/31/2005 - 9V2 Upgradation *****/  
+//					CHOOSE CASE ls_user_type
+					/***** End Of Comment - Cognizant - 05/31/2005 - 9V2 Upgradation *****/ 
+												
+					/***** Start Of New Code - Cognizant - 05/31/2005 - 9V2 Upgradation *****/	
+					// Trim user type
+					ls_user_type1 = Trim(ls_user_type)	
+					
+					// Debug: Insert status
+                  /* MessageBox("DEBUG", "Inserted new row with:" + &
+                       "~r~nusername: " + ls_bpp_user + &
+                       "~r~nuser_type: " + ls_user_type1 + &
+                       "~r~nuser_access: " + ls_user_access)*/
+					
+					// Handle user type logic
+					CHOOSE CASE ls_user_type1
+					/***** End Of New Code - Cognizant - 05/31/2005 - 9V2 Upgradation *****/
+					/***** End Of Change - Cognizant - 05/31/2005 - 9V2 Upgradation *****/ 
+							
+						CASE 'INTERNAL'
+							if ls_user_access = 'C' THEN
+								ls_usergroup = 'Internal CAN'
+							elseif ls_user_access = 'T' THEN
+								ls_usergroup = 'Internal with NT'
+							else
+								ls_usergroup = 'Internal no NT'
+							end if
+						CASE 'SUBSIDIARY'
+							if ls_user_access = 'C' THEN
+								ls_usergroup = 'Subsidiary CAN'
+							elseif ls_user_access = 'T' THEN
+								ls_usergroup = 'Subsidiary wNT'
+							else
+								ls_usergroup = 'Subsidiary no NT'
+							end if
+						CASE 'EXTERNAL'
+							if ls_user_access = 'C' THEN
+								ls_usergroup = 'External CAN'
+							else
+								ls_usergroup = 'External'
+							end if
+						CASE 'RECORDKEEPER'
+							if ls_user_access = 'C' THEN
+								ls_usergroup = 'RecordKeeper CAN'
+							else
+								ls_usergroup = 'RecordKeeper'
+							end if	
+						CASE ELSE
+							ls_usergroup = '     '	
+					END CHOOSE
+					 END IF
+					ids_search_results.SetItem(ll_insert_row_trans,"usergroup",ls_usergroup)
+				END IF
+				
+				FETCH sp_get_tran_ids
+			   INTO	:ls_bpp_user,
+						:ls_user_type,
+						:ls_user_access,
+						:ls_error_code;	
+				ll_error_code = Long (ls_error_code)
+			LOOP			
+			
+/***** Changed - Cognizant - 04/20/2005 - 9V2 Upgradation *****/
+/***** Start Of New Code - Cognizant - 04/20/2005 - 9V2 Upgradation *****/
+			Execute Immediate "Drop Table Session.BPSP350I_tab" USING NASARCH.ArchConnect[li_index].trans_obj ;
+		   COMMIT USING NASARCH.ArchConnect[li_index].trans_obj ;				 
+/***** End Of New Code - Cognizant - 04/20/2005 - 9V2 Upgradation *****/
+/***** End Of Change - Cognizant - 04/20/2005 - 9V2 Upgradation *****/ 
+			
+			fg_nea_rpc_close(li_index)
+			
+		
+	  		CLOSE sp_get_tran_ids;
+			
+		CASE ELSE
+			
+/***** Changed - Cognizant - 04/20/2005 - 9V2 Upgradation *****/
+/***** Start Of New Code - Cognizant - 04/20/2005 - 9V2 Upgradation *****/
+			Execute Immediate "Drop Table Session.BPSP350I_tab" USING NASARCH.ArchConnect[li_index].trans_obj ;
+  		   COMMIT USING NASARCH.ArchConnect[li_index].trans_obj ;				 
+/***** End Of New Code - Cognizant - 04/20/2005 - 9V2 Upgradation *****/
+/***** End Of Change - Cognizant - 04/20/2005 - 9V2 Upgradation *****/ 
+			
+	  		fg_nea_rpc_close(li_index)
+	  		CLOSE sp_get_tran_ids;
+    		RETURN UNSUCCESSFUL		
+	
+	END CHOOSE
+ELSE //fetch is 100 just drop the table.
+		/***** Changed - Cognizant - 05/01/2005 - 9V2 Upgradation *****/
+		/***** Start Of New Code - Cognizant - 05/01/2005 - 9V2 Upgradation *****/
+		Execute Immediate "Drop Table Session.BPSP350I_tab" USING NASARCH.ArchConnect[li_index].trans_obj ;
+		COMMIT USING NASARCH.ArchConnect[li_index].trans_obj ;				 
+		/***** End Of New Code - Cognizant - 05/01/2005 - 9V2 Upgradation *****/
+		/***** End Of Change - Cognizant - 05/01/2005 - 9V2 Upgradation *****/ 
+		fg_nea_rpc_close(li_index)
+		CLOSE sp_get_tran_ids;
+		RETURN SUCCESSFUL
+	END IF
+END IF
+END IF
+
+
+
+RETURN SUCCESSFUL
+
